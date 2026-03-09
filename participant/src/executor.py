@@ -148,13 +148,9 @@ def get_llm_response(prompt: str) -> str:
 
 class Executor(AgentExecutor):
     def __init__(self):
-        self._contexts: dict[str, list[dict]] = {}
+        self._contexts = {}
 
-    async def execute(
-        self,
-        context: RequestContext,
-        event_queue: EventQueue,
-    ) -> None:
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         message = context.message
         if not message or not message.parts:
             logger.warning("Received empty message")
