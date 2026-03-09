@@ -1,12 +1,11 @@
-import toml
+import tomllib
 import yaml
 
-with open("a2a-scenario.toml") as f:
-    scenario = toml.load(f)
+with open("a2a-scenario.toml", "rb") as f:
+    scenario = tomllib.load(f)
 
 services = {}
 
-# participants
 for participant in scenario.get("participants", []):
     name = participant["name"]
     services[name] = {
@@ -14,9 +13,7 @@ for participant in scenario.get("participants", []):
         "networks": ["agentnet"]
     }
 
-# judge
 judge_image = scenario["judge"]["image"]
-
 participant_name = scenario["participants"][0]["name"]
 
 services["judge"] = {
