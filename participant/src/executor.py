@@ -36,84 +36,92 @@ try:
 except ImportError:
     ANTHROPIC_AVAILABLE = False
 
+SYSTEM_PROMPT = """You are a precision-first financial document QA agent for U.S. Treasury Bulletins (1939-2025).
 
-You are a precision-first financial document QA agent for U.S. Treasury Bulletins (1939–2025).
-
-Your job: retrieve the correct value(s), compute accurately, and return EXACTLY ONE final answer.
+Your job is to retrieve the correct value, compute accurately when needed, and return EXACTLY ONE final answer.
 
 Hard rules:
-
 1. You MUST output your final answer ONLY inside <FINAL_ANSWER>...</FINAL_ANSWER>.
-
-2. Inside <FINAL_ANSWER>, include ONLY the final value (or a single short phrase). Do NOT include multiple candidate numbers.
-
-3. If units matter, include the unit exactly once (e.g., billion, million, %, $).
-
-4. Avoid hedging. Do NOT list ranges or alternatives.
-
-5. Before finalizing, self-check the year, units, sign (+/-), and arithmetic.
+2. Inside <FINAL_ANSWER>, include ONLY the final value or a single short phrase.
+3. Do NOT include multiple candidate numbers.
+4. If units matter, include the unit exactly once (for example: billion, million, %, $).
+5. Avoid hedging. Do NOT list ranges or alternatives.
+6. Before finalizing, self-check the year, units, sign, and arithmetic.
 
 Internal reasoning steps:
-
-• Identify what the question asks.
-• Locate relevant Treasury Bulletin evidence.
-• Extract numbers carefully.
-• Perform calculations if needed.
-• Sanity-check magnitude and units.
-• Output ONE final answer.
-
+- Identify exactly what the question asks.
+- Locate relevant Treasury Bulletin evidence.
+- Extract numbers carefully.
+- Perform calculations if needed.
+- Sanity-check magnitude and units.
+- Output ONE final answer.
+"""
 
 
 def get_llm_response(prompt: str) -> str:
     provider = os.environ.get("LLM_PROVIDER", "").lower()
 
     use_openai = (
-        OPENAI_AVAILABLE and
-        os.environ.get("OPENAI_API_KEY") and
-        (provider == "openai" or (provider == "" and not os.environ.get("ANTHROPIC_API_KEY")))
+        OPENAI_AVAILABLE
+        and os.environ.get("OPENAI_API_KEY")
+        and (provider == "openai" or (provider == "" and not os.environ.get("ANTHROPIC_API_KEY")))
     )
+
     use_anthropic = (
-        ANTHROPIC_AVAILABLE and
-        os.environ.get("ANTHROPIC_API_KEY") and
-        (provider == "anthropic" or (provider == "" and not use_openai))
+        ANTHROPIC_AVAILABLE
+        and os.environ.get("ANTHROPIC_API_KEY")
+        and (provider == "anthropic" or (provider == "" and not use_openai))
     )
 
     if use_openai:
         client = OpenAI()
-        model = os.environ["OPENAI_MODEL"]
+        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
         if model.startswith("gpt-5"):
             reasoning_effort = os.environ.get("REASONING_EFFORT", "")
             enable_web_search = os.environ.get("ENABLE_WEB_SEARCH", "false").lower() == "true"
             tools = [{"type": "web_search"}] if enable_web_search else None
+
             kwargs = {
                 "model": model,
                 "instructions": SYSTEM_PROMPT,
                 "input": [{"role": "user", "content": prompt}],
                 "tools": tools,
             }
+
             if reasoning_effort:
                 kwargs["reasoning"] = {"effort": reasoning_effort}
-            else:
-                kwargs["temperature"] = 0
+
             response = client.responses.create(**kwargs)
             return response.output_text or ""
-        else:
-            response = client.chat.completions.create(
+
+        enable_web_search = os.environ.get("ENABLE_WEB_SEARCH", "false").lower() == "true"
+
+        if enable_web_search:
+            response = client.responses.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0,
+                instructions=SYSTEM_PROMPT,
+                input=[{"role": "user", "content": prompt}],
+                tools=[{"type": "web_search"}],
             )
-            return response.choices[0].message.content or ""
+            return response.output_text or ""
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+        )
+        return response.choices[0].message.content or ""
 
     if use_anthropic:
         client = anthropic.Anthropic()
-        model = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-5-20251101")
+        model = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-1")
         max_tokens = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "16000"))
         enable_web_search = os.environ.get("ENABLE_WEB_SEARCH", "false").lower() == "true"
+
         kwargs = {
             "model": model,
             "max_tokens": max_tokens,
@@ -121,13 +129,21 @@ def get_llm_response(prompt: str) -> str:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
         }
+
         if enable_web_search:
-            kwargs["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 10}]
+            kwargs["tools"] = [
+                {
+                    "type": "web_search_20250305",
+                    "name": "web_search",
+                    "max_uses": 10,
+                }
+            ]
+
         response = client.messages.create(**kwargs)
-        text_parts = [block.text for block in response.content if hasattr(block, 'text')]
+        text_parts = [block.text for block in response.content if hasattr(block, "text")]
         return "\n".join(text_parts) if text_parts else ""
 
-    return "<FINAL_ANSWER>Unable to determine - no LLM configured</FINAL_ANSWER>"
+    return "Unable to determine answer - no LLM configured."
 
 
 class Executor(AgentExecutor):
@@ -170,7 +186,7 @@ class Executor(AgentExecutor):
 
         question_text = ""
         for part in message.parts:
-            root = part.root if hasattr(part, 'root') else part
+            root = part.root if hasattr(part, "root") else part
             if isinstance(root, TextPart):
                 question_text = root.text
                 break
@@ -179,7 +195,7 @@ class Executor(AgentExecutor):
             response = await asyncio.to_thread(get_llm_response, question_text)
         except Exception as e:
             logger.exception(f"LLM call failed: {e}")
-            response = f"<FINAL_ANSWER>Error: {e}</FINAL_ANSWER>"
+            response = f"Error: {e}"
 
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
