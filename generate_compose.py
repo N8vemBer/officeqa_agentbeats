@@ -22,13 +22,17 @@ def generate_compose(scenario):
         else:
             resolved_env[key] = value
 
-    services["judge"] = {
-        "image": green_image,
-        "ports": ["9009:9009"],
-        "environment": resolved_env,
-        "networks": ["agentnet"],
-        "depends_on": ["participant"],
-    }
+    participant_name = "participant"
+if scenario.get("participants"):
+    participant_name = scenario["participants"][0].get("name", "participant")
+
+services["judge"] = {
+    "image": green_image,
+    "ports": ["9009:9009"],
+    "environment": resolved_env,
+    "networks": ["agentnet"],
+    "depends_on": [participant_name],
+}
 
     for i, participant in enumerate(scenario.get("participants", [])):
         p_image = participant.get("image", "ghcr.io/OWNER/officeqa-agent:latest")
