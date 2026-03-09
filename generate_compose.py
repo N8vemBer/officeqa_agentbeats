@@ -22,7 +22,9 @@ def generate_compose(scenario):
         else:
             resolved_env[key] = value
 
-    participant_name = "participant"
+    services = {}
+
+participant_name = "participant"
 if scenario.get("participants"):
     participant_name = scenario["participants"][0].get("name", "participant")
 
