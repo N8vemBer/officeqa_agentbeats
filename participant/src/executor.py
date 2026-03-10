@@ -1,8 +1,4 @@
 import asyncio
-import logging
-import os
-from uuid import uuid4
-
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.types import (
@@ -12,202 +8,41 @@ from a2a.types import (
     TaskStatus,
     TaskStatusUpdateEvent,
     TextPart,
-    UnsupportedOperationError,
 )
+from uuid import uuid4
 
-logger = logging.getLogger(__name__)
 
-TERMINAL_STATES = {
-    TaskState.completed,
-    TaskState.canceled,
-    TaskState.failed,
-    TaskState.rejected,
-}
+SYSTEM_PROMPT = """You are a financial document QA agent for U.S. Treasury Bulletins (1939-2025).
 
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
+Return EXACTLY one final answer inside:
 
-try:
-    import anthropic
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
-
-SYSTEM_PROMPT = """You are a precision-first financial document QA agent for U.S. Treasury Bulletins (1939-2025).
-
-Your job is to retrieve the correct value, compute accurately when needed, and return EXACTLY ONE final answer.
-
-Hard rules:
-1. You MUST output your final answer ONLY inside <FINAL_ANSWER>...</FINAL_ANSWER>.
-2. Inside <FINAL_ANSWER>, include ONLY the final value or a single short phrase.
-3. Do NOT include multiple candidate numbers.
-4. If units matter, include the unit exactly once (for example: billion, million, %, $).
-5. Avoid hedging. Do NOT list ranges or alternatives.
-6. Before finalizing, self-check the year, units, sign, and arithmetic.
-
-Internal reasoning steps:
-- Identify exactly what the question asks.
-- Locate relevant Treasury Bulletin evidence.
-- Extract numbers carefully.
-- Perform calculations if needed.
-- Sanity-check magnitude and units.
-- Output ONE final answer.
+<FINAL_ANSWER>...</FINAL_ANSWER>
 """
 
 
-def get_llm_response(prompt: str) -> str:
-    provider = os.environ.get("LLM_PROVIDER", "").lower()
-
-    use_openai = (
-        OPENAI_AVAILABLE
-        and os.environ.get("OPENAI_API_KEY")
-        and (provider == "openai" or (provider == "" and not os.environ.get("ANTHROPIC_API_KEY")))
-    )
-
-    use_anthropic = (
-        ANTHROPIC_AVAILABLE
-        and os.environ.get("ANTHROPIC_API_KEY")
-        and (provider == "anthropic" or (provider == "" and not use_openai))
-    )
-
-    if use_openai:
-        client = OpenAI()
-        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-
-        if model.startswith("gpt-5"):
-            reasoning_effort = os.environ.get("REASONING_EFFORT", "")
-            enable_web_search = os.environ.get("ENABLE_WEB_SEARCH", "false").lower() == "true"
-            tools = [{"type": "web_search"}] if enable_web_search else None
-
-            kwargs = {
-                "model": model,
-                "instructions": SYSTEM_PROMPT,
-                "input": [{"role": "user", "content": prompt}],
-                "tools": tools,
-            }
-
-            if reasoning_effort:
-                kwargs["reasoning"] = {"effort": reasoning_effort}
-
-            response = client.responses.create(**kwargs)
-            return response.output_text or ""
-
-        enable_web_search = os.environ.get("ENABLE_WEB_SEARCH", "false").lower() == "true"
-
-        if enable_web_search:
-            response = client.responses.create(
-                model=model,
-                instructions=SYSTEM_PROMPT,
-                input=[{"role": "user", "content": prompt}],
-                tools=[{"type": "web_search"}],
-            )
-            return response.output_text or ""
-
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0,
-        )
-        return response.choices[0].message.content or ""
-
-    if use_anthropic:
-        client = anthropic.Anthropic()
-        model = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-1")
-        max_tokens = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "16000"))
-        enable_web_search = os.environ.get("ENABLE_WEB_SEARCH", "false").lower() == "true"
-
-        kwargs = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "system": SYSTEM_PROMPT,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
-        }
-
-        if enable_web_search:
-            kwargs["tools"] = [
-                {
-                    "type": "web_search_20250305",
-                    "name": "web_search",
-                    "max_uses": 10,
-                }
-            ]
-
-        response = client.messages.create(**kwargs)
-        text_parts = [block.text for block in response.content if hasattr(block, "text")]
-        return "\n".join(text_parts) if text_parts else ""
-
-    return "Unable to determine answer - no LLM configured."
-
-
 class Executor(AgentExecutor):
-    def __init__(self):
-        self._contexts = {}
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
-        message = context.message
-        if not message or not message.parts:
-            logger.warning("Received empty message")
-            return
 
-        task = context.current_task
-        if task and task.status.state in TERMINAL_STATES:
-            logger.info(f"Task {task.id} already in terminal state")
-            return
+        question = ""
+        for part in context.message.parts:
+            if isinstance(part.root, TextPart):
+                question = part.root.text
 
-        task_id = context.task_id or "unknown"
-        context_id = context.context_id or "unknown"
+        answer = "<FINAL_ANSWER>unknown</FINAL_ANSWER>"
 
         await event_queue.enqueue_event(
             TaskStatusUpdateEvent(
-                taskId=task_id,
-                contextId=context_id,
-                status=TaskStatus(
-                    state=TaskState.working,
-                    message=Message(
-                        messageId=uuid4().hex,
-                        role="agent",
-                        parts=[Part(root=TextPart(kind="text", text="Processing question..."))],
-                    ),
-                ),
-                final=False,
-            )
-        )
-
-        question_text = ""
-        for part in message.parts:
-            root = part.root if hasattr(part, "root") else part
-            if isinstance(root, TextPart):
-                question_text = root.text
-                break
-
-        try:
-            response = await asyncio.to_thread(get_llm_response, question_text)
-        except Exception as e:
-            logger.exception(f"LLM call failed: {e}")
-            response = f"Error: {e}"
-
-        await event_queue.enqueue_event(
-            TaskStatusUpdateEvent(
-                taskId=task_id,
-                contextId=context_id,
+                taskId=context.task_id,
+                contextId=context.context_id,
                 status=TaskStatus(
                     state=TaskState.completed,
                     message=Message(
                         messageId=uuid4().hex,
                         role="agent",
-                        parts=[Part(root=TextPart(kind="text", text=response))],
+                        parts=[Part(root=TextPart(kind="text", text=answer))],
                     ),
                 ),
                 final=True,
             )
         )
-
-    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise UnsupportedOperationError(message="Cancellation not supported")
