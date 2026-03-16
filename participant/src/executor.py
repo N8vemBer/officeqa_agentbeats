@@ -32,16 +32,20 @@ class Executor(AgentExecutor):
         answer = "<FINAL_ANSWER>unknown</FINAL_ANSWER>"
 
         await event_queue.enqueue_event(
-            TaskStatusUpdateEvent(
-                taskId=context.task_id,
-                contextId=context.context_id,
-                status=TaskStatus(
-                    state=TaskState.completed,
-                    message=Message(
-                        messageId=uuid4().hex,
-                        role="agent",
-                        parts=[Part(root=TextPart(kind="text", text=answer))],
-                    ),
+    TaskStatusUpdateEvent(
+        taskId=context.task_id,
+        contextId=context.context_id,
+        status=TaskStatus(
+            state=TaskState.completed,
+            message=Message(
+                messageId=uuid4().hex,
+                role="agent",
+                parts=[Part(root=TextPart(kind="text", text=answer))],
+            ),
+        ),
+        final=True,
+    )
+)
                 ),
                 final=True,
             )
