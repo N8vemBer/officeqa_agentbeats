@@ -1,0 +1,7 @@
+{
+  "agent_name": "OfficeQA Purple — Bayesian Minds",
+  "description": "A reasoning-based agent using structured probabilistic thinking to solve complex tasks.",
+  "model": "gpt-4o",
+  "strategy": "step-by-step reasoning with uncertainty awareness",
+  "benchmark": "tau2-bench"
+}
